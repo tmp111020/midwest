@@ -1,0 +1,8 @@
+{
+"type": "FeatureCollection",
+"name": "160011921331155-nys",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+"features": [
+
+]
+}

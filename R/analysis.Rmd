@@ -1,0 +1,208 @@
+# Data preparation
+```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
+library(sf)
+library(sfe)
+library(here)
+library(Boruta)
+library(caret)
+library(catboost)
+library(dplyr)
+
+## read data and remove those polygons with centroids farther north than the
+## northern border of USA; some people looked like they were testing app
+## functionality without meaning to submit a response.
+##
+## also had to remove a polygon that was a small sliver
+nu.prm <- sfe::load_polygons(dsn = here("data/nu-prm/")) %>%
+  poly_features(., 2163, state_intersect = TRUE, state_cent_intersect = TRUE) %>%
+  filter(cent_y < 49 &
+         (num_points != 87 & cent_x != -102.2074) &
+         (num_points != 22 & cent_x != -84.27765) &
+         (num_points > 30) &
+         (cent_y > 29.5)) %>%
+  select(-c(file)) %>%
+  mutate(campus = as.factor("nu"))
+
+su.prm <- sfe::load_polygons(dsn = here("data/su-prm")) %>%
+  poly_features(., crs = 2163, state_intersect = TRUE, state_cent_intersect = TRUE) %>%
+  filter(num_points > 15) %>%
+  select(-c(file)) %>%
+  mutate(campus = as.factor("su"))
+
+## for experimenting
+dat.w.geom <- rbind(nu.prm, su.prm)
+
+## for models, need to remove geometry
+dat <- rbind(nu.prm, su.prm) %>%
+  st_set_geometry(NULL)
+
+save(nu.prm, file = here("modeling/nu-prm.Rdata"))
+save(su.prm, file = here("modeling/su-prm.Rdata"))
+save(dat, file = here("modeling/dat.Rdata"))
+```
+# Modeling
+## Preparation
+
+```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
+set.seed(7122021)
+
+## use boruta algorithm to select important features; only necessary if feature
+## selection is carried out and not doing kitchen sink
+boruta.result <- Boruta(campus ~., data = dat, doTrace = 2)
+
+## keep 1's (tentative) and 2's (confirmed)
+keep.index <- boruta.result$finalDecision %>% as.numeric() < 3
+
+dat.sub <- dat[,c(keep.index)]
+
+## see potentially important variables
+dat.sub %>% names()
+
+## define split
+tc <- trainControl(method = "LOOCV",
+                   savePredictions = "final",
+                   classProbs = TRUE)
+```
+
+## Naive Bayes (without feature selection)
+
+```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
+nb.grid <- expand.grid(adjust = c(1, 2, 3),
+                       laplace = c(0, 1),
+                       usekernel = c(0, 1))
+
+## without feature selection
+if (!file.exists(here("modeling/nb-model.Rdata"))) {
+  set.seed(7122020)
+  nb <- train(campus~.,
+              data=dat,
+              trControl=tc,
+              method="naive_bayes",
+              tuneGrid = nb.grid)
+  save(nb, file = here("modeling/nb-model.Rdata"))
+} else  {
+  load(here("modeling/nb-model.Rdata"))
+}
+
+```
+## Naive Bayes (with feature selection)
+```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
+nb.grid <- expand.grid(adjust = c(1, 2, 3),
+                       laplace = c(0, 1),
+                       usekernel = c(0, 1))
+
+## with feature selection
+if (!file.exists(here("modeling/nb-model-fs.Rdata"))) {
+  set.seed(7122020)
+  nb.fs <- train(campus~.,
+                 data=dat.sub,
+                 trControl=tc,
+                 method="naive_bayes",
+                 tuneGrid = nb.grid)
+  save(nb.fs, file = here("modeling/nb-model-fs.Rdata"))
+} else {
+  load(here("modeling/nb-model-fs.Rdata"))
+}
+```
+
+## Random forest (without feature selection)
+```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
+library(doParallel)
+
+## use 20 cores (threads)
+cl <- makePSOCKcluster(10)
+registerDoParallel(cl)
+
+rf.grid <- expand.grid(mtry = c(seq(2, 40, 6)))
+
+## if model hasn't been saved yet, run model
+if (!file.exists(here("modeling/rf-model.Rdata"))) {
+  set.seed(7122020)
+  rf <- train(campus~.,
+              data=dat,
+              trControl=tc,
+              method="rf",
+              tuneGrid = rf.grid,
+              keep.inbag = TRUE)
+  save(rf, file = here("modeling/rf-model.Rdata"))
+} else {
+  load(here("modeling/rf-model.Rdata"))
+}
+
+stopCluster(cl)
+```
+
+## Random forest (with feature selection)
+
+```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
+library(doParallel)
+
+## use 20 cores (threads)
+cl <- makePSOCKcluster(20)
+registerDoParallel(cl)
+
+## if model hasn't been saved yet, run model
+if (!file.exists(here("modeling/rf-model-fs.Rdata"))) {
+  set.seed(7122020)
+  rf.fs <- train(campus~.,
+                 data=dat.sub,
+                 trControl=tc,
+                 method="rf",
+                 tuneGrid = rf.grid,
+                 keep.inbag = TRUE)
+  save(rf.fs, file = here("modeling/rf-model-fs.Rdata"))
+}  else {
+    load(here("modeling/rf-model-fs.Rdata"))
+}
+
+stopCluster(cl)
+```
+
+## catboost (without feature selection)
+```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
+cb.grid <- expand.grid(depth = c(2, 4, 6),
+                       learning_rate = seq(0.05, 1, 0.25),
+                       iterations = 100,
+                       l2_leaf_reg = 0.000001,
+                       rsm = c(0.1, 0.5, 0.9),
+                       border_count = 255)
+
+## if model hasn't been saved yet, run model
+if (!file.exists(here("modeling/cb-model.Rdata"))) {
+  set.seed(7122020)
+  cb <- train(y = dat$campus,
+              x=dat %>% select(-c(campus)),
+              trControl=tc,
+              method=catboost.caret,
+              preProc = NULL,
+              tuneGrid = cb.grid,
+              logging_level = "Silent")
+  save(cb, file = here("modeling/cb-model.Rdata"))
+}  else {
+  load(here("modeling/cb-model.Rdata"))
+}
+```
+
+## catboost (with feature selection)
+```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
+cb.grid <- expand.grid(depth = c(2, 4, 6),
+                       learning_rate = seq(0.05, 1, 0.25),
+                       iterations = 100,
+                       l2_leaf_reg = 0.000001,
+                       rsm = c(0.1, 0.5, 0.9),
+                       border_count = 255)
+
+if (!file.exists(here("modeling/cb-model-fs.Rdata"))) {
+  set.seed(7122020)
+  cb.fs <- train(y = dat.sub$campus,
+                 x=dat.sub %>% select(-c(campus)),
+                 trControl=tc,
+                 method=catboost.caret,
+                 tuneGrid = cb.grid,
+                 preProc = NULL,
+                 logging_level = "Silent")
+  save(cb.fs, file = here("modeling/cb-model-fs.Rdata"))
+}  else {
+  load(here("modeling/cb-model-fs.Rdata"))
+}
+```

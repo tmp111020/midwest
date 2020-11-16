@@ -1,0 +1,698 @@
+# Load data, libraries, and models
+```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
+library(sf)
+library(sfe)
+library(here)
+library(ggplot2)
+library(grid)
+library(gridExtra)
+library(Boruta)
+library(caret)
+library(dplyr)
+library(stringr)
+library(magrittr)
+library(knitr)
+library(kableExtra)
+library(tidyselect)
+library(reshape2)
+library(units)
+
+## data
+load(here("modeling/nu-prm.Rdata"))
+load(here("modeling/su-prm.Rdata"))
+load(here("modeling/dat.Rdata"))
+
+## models
+load(here("modeling/nb-model.Rdata"))
+load(here("modeling/nb-model-fs.Rdata"))
+load(here("modeling/rf-model.Rdata"))
+load(here("modeling/rf-model-fs.Rdata"))
+load(here("modeling/cb-model.Rdata"))
+load(here("modeling/cb-model-fs.Rdata"))
+
+```
+# Visualization
+## Data prep
+```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
+## dissolve boundaries
+states.dissolve <- sfe::states %>%
+  summarize(ALAND = sum(ALAND))
+
+states.2163 <- sfe::states %>%
+  st_transform(2163)
+```
+## Density plots (blind)
+```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
+vars.to.plot <- c("cent_x", "cent_y", "min_x", "min_y", "max_x", "max_y",
+                  "big_ten_cities", "num_points", "area", "points_area_ratio",
+                  "campus")
+
+units(dat$area) <- with(ud_units, km^2)
+dat$points_area_ratio <- dat$points_area_ratio * 10e10
+
+##
+dat.sub <- dat %>%
+  dplyr::select(all_of(vars.to.plot)) %>%
+  melt("campus")
+
+ggplot(dat.sub, aes(value, fill = campus)) +
+  theme(text = element_text(family = "Source Code Pro",
+                            size = 16),
+        axis.title.x=element_blank(),
+        axis.text.y = element_blank(),
+        axis.title.y=element_blank()) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~ variable, scales = "free", ncol = 2) +
+  scale_fill_manual(name = "University",
+                    values = c("cyan", "magenta"),
+                    labels = c("North", "South"))
+
+## save plot here
+ggsave(filename = here("img/density-plots-blind.jpg"), dpi = 300, width = 14, height = 11)
+```
+## Study area (blind)
+```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
+ggplot() +
+  theme(text = element_text(family = "Source Code Pro", size = 16),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank()) +
+  geom_sf(data = states %>% st_transform(2163), fill = "white") +
+  geom_sf(size = 3)
+
+ggsave(filename = here("img/study-area-blind.jpg"), dpi = 300, width = 8.5, height = 5)
+```
+## Map reproductions of previous studies
+```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
+## just subset states for map1
+census.def <- states.2163 %>%
+  filter(NAME == "North Dakota" |
+         NAME == "South Dakota" |
+         NAME == "Nebraska" |
+         NAME == "Kansas" |
+         NAME == "Missouri" |
+         NAME == "Iowa" |
+         NAME == "Minnesota" |
+         NAME == "Wisconsin" |
+         NAME == "Illinois" |
+         NAME == "Indiana" |
+         NAME == "Michigan" |
+         NAME == "Ohio")
+
+citylab.def <- st_read(here("/data/map-reproductions/citylab.shp")) %>%
+  st_transform(2163)
+
+## the mutate and arrange lines simply reverse the order (so all polygons can be
+## seen)
+zelinsky.def <- st_read(here("/data/map-reproductions/zelinsky.shp")) %>%
+  st_transform(2163) %>%
+  arrange(desc(Id)) %>%
+  st_intersection(states.2163)
+
+shortridge.def <- st_read(here("data/map-reproductions/shortridge.shp")) %>%
+  st_transform(2163) %>%
+  st_intersection(states.2163)
+
+## minimum x and y for label placement
+min_x <- st_coordinates(states.2163) %>%
+  data.frame() %>%
+  pull(X) %>%
+  min()
+
+min_y <- st_coordinates(states.2163) %>%
+  data.frame() %>%
+  pull(Y) %>%
+  min()
+
+map.zelinsky <- ggplot(states.2163) +
+  theme(text = element_text(family = "Source Code Pro"),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "none",
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank()) +
+  geom_sf(fill = "white") +
+  geom_sf(data = zelinsky.def, aes(fill = as.factor(Id)), alpha = 0.7) +
+  annotate("text", label = "A", x = min_x, y = min_y, size = 7, colour = "black") +
+  scale_fill_manual(values = c("#a63603", "#e6550d", "#fd8d3c", "#fdbe85")) +
+  coord_sf(datum = NA) +
+  ggtitle("Zelinksy (1980)")
+
+map.shortridge <- ggplot(states.2163) +
+  theme(text = element_text(family = "Source Code Pro"),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "none",
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank()) +
+  geom_sf(fill = "white") +
+  geom_sf(data = shortridge.def, aes(fill = as.factor(Id)), alpha = 0.9) +
+  annotate("text", label = "B", x = min_x, y = min_y, size = 7, colour = "black") +
+  scale_fill_brewer(palette = "Oranges") +
+  coord_sf(datum = NA) +
+  ggtitle("Shortridge (1985)")
+
+map.citylab <- ggplot(states.2163) +
+  theme(text = element_text(family = "Source Code Pro"),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "none",
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank()) +
+  geom_sf(fill = "white") +
+  geom_sf(data = citylab.def, aes(fill = as.factor(Id)), alpha = 0.7) +
+  annotate("text", label = "C", x = min_x, y = min_y, size = 7, colour = "black") +
+  scale_fill_manual(values = c("#a63603", "#e6550d", "#fd8d3c", "#fdbe85")) +
+  coord_sf(datum = NA) +
+  ggtitle("Montgomery (2019)")
+
+map.census <- ggplot(states.2163) +
+  theme(text = element_text(family = "Source Code Pro"),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "none",
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank()) +
+  geom_sf(fill = "white") +
+  geom_sf(data = census.def, alpha = 0.7, fill = "#e6550d") +
+  annotate("text", label = "D", x = min_x, y = min_y, size = 7, colour = "black") +
+  coord_sf(datum = NA) +
+  ggtitle("US Census (n.d.)")
+
+repro.maps <- arrangeGrob(map.zelinsky, map.shortridge, map.citylab, map.census, ncol = 2)
+ggsave(filename = here("img/reproductions.jpg"), repro.maps, width = 10, height = 7, units = "in", dpi = 300)
+```
+
+## Raw polygons (hollow, blind)
+```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
+map1 <- ggplot() +
+  theme(text = element_text(family = "Source Code Pro",
+                            size = 16),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        plot.title = element_text(hjust = 0.5))+
+  geom_sf(data = states.dissolve, color = "black") +
+  geom_sf(data = nu.prm, fill = NA) +
+  ggtitle("North University (NU)") +
+  annotate("text", label = toupper(letters[1]), x = -127, y = 27, size = 10, colour = "black")
+
+map2 <- ggplot() +
+  theme(text = element_text(family = "Source Code Pro",
+                            size = 16),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        plot.title = element_text(hjust = 0.5))+
+  geom_sf(data = states.dissolve, color = "black") +
+  geom_sf(data = su.prm, fill = NA) +
+  ggtitle("South University (SU)") +
+  annotate("text", label = toupper(letters[2]), x = -127, y = 27, size = 10, colour = "black")
+
+## put both on same plot
+## Student responses to the question 'What do you consider the Midwest of the United States?'"
+maps <- arrangeGrob(map1, map2, ncol = 1)
+
+ggsave(filename = here("img/raw-polygons-hollow-blind.jpg"), maps, dpi = 300, width = 14, height = 16)
+```
+
+## Aggregate responses (blind)
+```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
+## all data together
+library(stars)
+library(ggspatial)
+library(tidyr)
+library(RColorBrewer)
+library(raster)
+
+r <- raster(ncol = 1500, nrow = 1200)
+
+## have to convert to spatial polygons (without dataframe) use count function
+## for additive raster of responses
+nu.rast <- rasterize(x = nu.prm %>% st_geometry() %>% as_Spatial(), y = r, fun = "count")
+nu.rast.df <- as.data.frame(nu.rast, xy = TRUE) %>%
+  drop_na() %>%
+  mutate(per = layer/nrow(nu.prm))
+
+map1 <- ggplot(data = states) +
+  theme(text = element_text(family = "Source Code Pro",
+                            size = 16),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        plot.title = element_text(hjust = 0.5))+
+  geom_sf(alpha = 0.6) +
+  geom_raster(data = nu.rast.df, aes(x = x, y = y, fill = per), alpha = 0.6, interpolate = TRUE) +
+  coord_sf(datum = NA) +
+  ggtitle("NU") +
+  scale_fill_gradientn("%", colours = rev(brewer.pal(11, "Spectral")))
+
+r <- raster(ncol = 1500, nrow = 1200)
+
+## have to convert to spatial polygons (without dataframe) use count function
+## for additive raster of responses
+su.rast <- rasterize(x = su.prm %>% st_geometry() %>% as_Spatial(), y = r, fun = "count")
+su.rast.df <- as.data.frame(su.rast, xy = TRUE) %>%
+  drop_na() %>%
+  mutate(per = layer/nrow(su.prm))
+
+map2 <- ggplot(data = states) +
+  theme(text = element_text(family = "Source Code Pro",
+                            size = 16),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        plot.title = element_text(hjust = 0.5))+
+  geom_sf(alpha = 0.6) +
+  geom_raster(data = su.rast.df, aes(x = x, y = y, fill = per), alpha = 0.6, interpolate = TRUE) +
+  coord_sf(datum = NA) +
+  ggtitle("SU") +
+  scale_fill_gradientn("%", colours = rev(brewer.pal(11, "Spectral")))
+
+## Responess together
+prm <- rbind(nu.prm, su.prm)
+set.seed(07202020)
+prm$rand_order <- runif(n = nrow(prm))
+
+prm <- prm %>%
+  arrange(prm$rand_order)
+
+## plot both together
+map3 <- ggplot(data = states) +
+  theme(text = element_text(family = "Source Code Pro",
+                            size = 16),
+        plot.title = element_text(hjust = 0.5))+
+  geom_sf(fill = "white", lwd = 0.3) +
+  geom_sf(data = prm,
+          aes(fill = campus),
+          alpha = 0.035,
+          lwd = 0) +
+  scale_fill_manual(name = "University",
+                    breaks = c(1, 0),
+                    labels = c("NU", "SU"),
+                    values = c("cyan", "magenta")) +
+  ## make legend not transparent
+  guides(fill = guide_legend(override.aes = list(alpha = 0.5))) +
+  ggtitle("All responses")
+
+## This is helpful: https://stackoverflow.com/a/54495290/5824031
+maps <- grid.arrange(map3, map2, map1, layout_matrix = matrix(c(3, 1, 2, 1), nrow = 2))
+
+ggsave(filename = here("img/all-polygons-blind.jpg"), maps, dpi = 300, width = 11, height = 10)
+```
+
+
+
+# Post hoc analysis
+## Misclassified observations for catboost (and plot; blind)
+```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
+## here, values of -1 are those which were predicted to be nu but were
+## actually su; values of +1 are those which were predicted to be su but were
+## nu
+cb$pred$misclassified <- (cb$pred$pred %>% as.numeric) -
+  (cb$pred$obs %>% as.numeric)
+
+## put geometry back on for plotting
+dat.w.geom <- rbind(nu.prm, su.prm)
+
+## attach new vars, obs and pred are for verification
+dat.class.probs <- cbind(dat.w.geom, cb$pred %>%
+                                     arrange(rowIndex) %>%
+                                     mutate(nu.prob = nu,
+                                            su.prob = su) %>%
+                                     dplyr::select(misclassified, obs, pred, nu.prob, su.prob))
+
+## get four misclassified nu responses, these have a value of -1
+set.seed(10202020)
+su.mislcass <- dat.class.probs %>%
+  filter(misclassified == -1) %>%
+  sample_n(4)
+
+## get two misclassified nu responses, these have a value of 1
+set.seed(10202020)
+nu.misclass <- dat.class.probs %>%
+  filter(misclassified == 1) %>%
+  sample_n(2)
+
+misclass.sample <- rbind(su.mislcass, nu.misclass)
+
+campus.names <- c("NU", "SU")
+colors <- c("cyan", "magenta")
+
+base.plot <- ggplot() +
+  geom_sf(data = states, fill = "white")
+
+map.list <- vector(mode = "list", length = 4)
+
+for (i in 1:nrow(misclass.sample)) {
+  map.list[[i]] <- base.plot +
+    geom_sf(data = misclass.sample[i,], fill = colors[as.numeric(misclass.sample$campus[i])], alpha = 0.50) +
+    annotate("text", label = toupper(letters[i]), x = -127, y = 27, size = 7, colour = "black") +
+    coord_sf(datum = NA) +
+    theme(text = element_text(family = "Source Code Pro",
+                              size = 16),
+          axis.title.x=element_blank(),
+          axis.title.y=element_blank()) +
+  ggtitle(paste0("Predicted: ",
+                   toupper(misclass.sample$pred[i]),
+                   " (p = ",
+                   ## fancy way of getting the class probability of the predicted value
+                   round(misclass.sample[[paste0(misclass.sample$pred[i], ".", "prob")]][i], 2),
+                   ")",
+                   "\n",
+                   "Observed: ",
+                   toupper(misclass.sample$obs[i])))
+}
+
+n.col <- 2
+maps <- do.call("grid.arrange", c(map.list, ncol = n.col))
+ggsave(filename = here("img/misclassified-observations-blind.jpg"), maps, dpi = 300, width = 14, height = 11)
+```
+
+# Tables
+## Feature engineering
+```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
+library(knitr)
+library(kableExtra)
+library(stringr)
+
+vars <- dat %>%
+  names %>%
+  head(15) %>%
+  c(., "ST_int (49 features)", "ST_cent (49 features)", "great_lakes_states", "big_ten_cities") %>%
+  paste0("\\texttt{", ., "}") %>%
+  str_replace_all("_", "\\\\_")
+
+expl <- c("\\textit{x} centroid",
+          "\\textit{y} centroid",
+          "Polygon area",
+          "Minimum \\textit{x} coorindate",
+          "Maximum \\textit{x} coorindate",
+          "Minimum \\textit{y} coorindate",
+          "Maximum \\textit{y} coorindate",
+          "Difference between \\textit{x} coordinates in planar distance (i.e. map units)",
+          "Difference between \\textit{y} coordinates in planar distance (i.e. map units)",
+          "Difference between \\textit{x} coordinates in geodesic distance (i.e. true distance)",
+          "Difference between \\textit{y} coordinates in geodesic distance (i.e. true distance)",
+          "Ratio between \\textit{x} and \\textit{y} differences in planar distance",
+          "Ratio between \\textit{x} and \\textit{y} differences in geodesic distance",
+          "Number of points comprising the polygon",
+          "Ratio between the number of points and polgon area",
+          "Binary feature representing the intersection with each US state, where `ST' is substituted with each US state abbreviation",
+          "Binary feature representing the intersection with each US state centroid, where `ST' is substituted with each US state abbreviation",
+          "Number of Great Lakes States intersected",
+          "Number of Big 10 cities intersected") %>%
+  ## hanging indent in these celss
+  paste0("\\hangindent=1em ", .)
+
+en.ex <- rep("Endogenous", 15) %>% c(., rep("Exogenous", 4))
+
+vars[16] <- paste0(vars[16], "\\textsuperscript{1}")
+vars[17] <- paste0(vars[17], "\\textsuperscript{1}")
+
+feature.df <- data.frame(vars = vars,
+                         expl = expl,
+                         en.ex = en.ex)
+
+kbl(feature.df,
+    col.names = c("Feature", "Details", "Group"),
+    escape = FALSE,
+    format = "latex",
+    booktabs = TRUE) %>%
+  column_spec(2, "6.5cm") %>%
+  footnote(general = "Area calculations are made using EPSG:2163",
+           number = "Excludes Alaska and Hawaii but includes Washington, D.C.")
+
+```
+## Feature selection
+```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
+set.seed(7122021)
+
+## use boruta algorithm to select important features; only necessary if feature
+## selection is carried out and not doing kitchen sink
+boruta.result <- Boruta(campus ~., data = dat, doTrace = 2)
+
+## keep 1's (tentative) and 2's (confirmed)
+keep.index <- boruta.result$finalDecision %>% as.numeric() < 3
+
+bor.df <- data.frame(Feature = boruta.result$finalDecision[keep.index] %>%
+                       data.frame %>%
+                       rownames %>%
+                       paste0("\\texttt{", ., "}") %>%
+                       str_replace_all("_", "\\\\_"),
+                     Importance = boruta.result$finalDecision[keep.index] %>%
+                       data.frame %>%
+                       pull(.)) %>%
+  arrange(desc(Importance))
+
+rows <- seq_len(nrow(bor.df) %/% 2)
+
+kbl(list(bor.df[rows,] %>% rbind(., data.frame(Feature = "", Importance = "")),
+         matrix(numeric(), nrow=0, ncol=1),
+         bor.df[-rows,] %>% set_rownames(NULL)),
+    format = "latex",
+    booktabs = TRUE,
+    escape = FALSE) %>%
+  column_spec(column = 1, width = "7em") %>%
+  column_spec(column = 2, width = "6em") %>%
+  column_spec(column = 3, width = "7em") %>%
+  column_spec(column = 4, width = "6em")
+
+```
+
+## Hyperparameter tuning
+```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
+library(knitr)
+library(kableExtra)
+
+nb.grid <- expand.grid(adjust = c(1, 2, 3),
+                       laplace = c(0, 1),
+                       usekernel = c(0, 1))
+
+rf.grid <- expand.grid(mtry = c(seq(2, 40, 6)))
+
+cb.grid <- expand.grid(depth = c(2, 4, 6),
+                       learning_rate = seq(0.05, 1, 0.25),
+                       iterations = 100,
+                       l2_leaf_reg = 0.000001,
+                       rsm = c(0.1, 0.5, 0.9),
+                       border_count = 255)
+
+
+models <- c("Random forest", "Naive Bayes", "CatBoost")
+param1 <- c("mtry", "adjust", "depth")
+param2 <- c("", "laplace", "learning_rate")
+param3 <- c("", "usekernel", "rms")
+
+rf.params <- list("mtry", NA, NA)
+data.frame(models = c("Random Forest", "Naive Bayes", "CatBoost"),
+           param1 = c("mtry", "adjust", "depth"))
+
+nb.params <- c(nb.grid %>% names())
+nb.values <- c("1, 2, 3", "0, 1", "0, 1")
+
+rf.params <- c("mtry", "", "")
+rf.values <- c("2, 8, 14, 20, 26, 32, 38", "", "")
+
+cb.params <- c("depth", "learning_rate", "rsm")
+cb.values <- c("2, 4, 6", "0.05, 0.30, 0.55, 0.80", "0.1, 0.5, 0.9")
+
+hyper.params <- data.frame(nb.params, nb.values, rf.params, rf.values, cb.params, cb.values)
+
+knitr::kable(hyper.params, col.names = NULL, format = "latex", booktabs = TRUE) %>%
+  add_header_above(c("Parameter" = 1, "Value" = 1, "Parameter" = 1, "Value" = 1, "Parameter" = 1, "Value" = 1), bold = TRUE) %>%
+  add_header_above(c("Naive Bayes" = 2, "Random Forest" = 2, "CatBoost" = 2))
+```
+## Model results
+```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
+model.colnames <- c("param.1", "param.2", "param.3", "Model", "fs", "Accuracy")
+
+nb.row <- nb$bestTune %>%
+  select(c(laplace, usekernel, adjust)) %>%
+  mutate("Model" = "Naive Bayes",
+         "fs" = "No",
+         "Accuracy" = max(nb$results$Accuracy))
+
+nb.fs.row <- nb.fs$bestTune %>%
+  select(c(laplace, usekernel, adjust)) %>%
+  mutate("Model" = "Naive Bayes",
+         "fs" = "Yes",
+         "Accuracy" = max(nb.fs$results$Accuracy))
+
+nb.rows <- rbind(nb.row, nb.fs.row)
+colnames(nb.rows) <- model.colnames
+
+cb.row <- cb$bestTune %>%
+  select(c(depth, learning_rate, rsm)) %>%
+  mutate("Model" = "CatBoost",
+         "learning_rate" = round(learning_rate, 2),
+         "fs" = "No",
+         "Accuracy" = max(cb$results$Accuracy))
+
+cb.fs.row <- cb.fs$bestTune %>%
+  select(c(depth, learning_rate, rsm)) %>%
+  mutate("Model" = "CatBoost",
+         "learning_rate" = round(learning_rate, 2),
+         "fs" = "Yes",
+         "Accuracy" = max(cb.fs$results$Accuracy))
+
+cb.rows <- rbind(cb.row, cb.fs.row)
+colnames(cb.rows) <- model.colnames
+
+rf.row <- rf$bestTune %>%
+  transmute("Model" = "Random Forest",
+            "param.1" = mtry,
+            "param.2" = "",
+            "param.3" = "",
+            "fs" = "No",
+            "Accuracy" = max(rf$results$Accuracy))
+
+rf.fs.row <- rf.fs$bestTune %>%
+  transmute("Model" = "Random Forest",
+         "param.1" = mtry,
+         "param.2" = "",
+         "param.3" = "",
+         "fs" = "Yes",
+         "Accuracy" = max(rf.fs$results$Accuracy))
+
+rf.rows <- rbind(rf.row, rf.fs.row)
+
+results.rows <- rbind(nb.rows, rf.rows, cb.rows) %>%
+  select(fs, param.1, param.2, param.3, Accuracy)
+
+kbl(results.rows[1:2,], col.names = c("Feature selection",
+                                      "laplace",
+                                      "usekernel",
+                                      "adjust",
+                                      "Accuracy"),
+    format = "latex",
+    booktabs = TRUE,
+    align = rep("l", 5),
+    vline = "") %>%
+  add_header_above(c("Naive Bayes" = 5))
+
+kbl(results.rows[3:4,], col.names = c("Feature selection",
+                                      "mtry",
+                                      "",
+                                      "",
+                                      "Accuracy"),
+    row.names = FALSE,
+    format = "latex",
+    booktabs = TRUE,
+    align = rep("l", 5),
+    vline = "") %>%
+  add_header_above(c("Random Forest" = 5))
+
+kbl(results.rows[5:6,],
+    col.names = c("Feature selection",
+                  "depth",
+                  "learning_rate",
+                  "rsm",
+                  "Accuracy"),
+    row.names = FALSE,
+    format = "latex",
+    booktabs = TRUE,
+    align = rep("l", 5),
+    vline = "") %>%
+  add_header_above(c("CatBoost" = 5))
+```
+
+## Variable importance
+```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
+library(tibble)
+
+vi <- varImp(cb)
+
+vi.top <- vi$importance %>%
+  arrange(desc(Overall)) %>%
+  slice(1:20) %>%
+  transmute("Feature" = rownames(.) %>% paste0("\\texttt{", ., "}") %>% str_replace_all("_", "\\\\_"),
+            "Importance" = Overall) %>%
+  remove_rownames()
+
+## WARNING: vi.top won't look right, but the text printed to the console is
+## correct after creating table!
+kbl(vi.top,
+    format = "latex",
+    booktabs = TRUE,
+    escape = FALSE)
+
+```
+## Confusion matrix
+```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
+library(knitr)
+library(kableExtra)
+library(magrittr)
+
+## it's this easy:
+conf.mat <- table(cb$pred$obs, cb$pred$pred) %>%
+  matrix(nrow = 2) %>%
+  data.frame %>%
+  rename("NU" = X1,
+         "SU" = X2) %>%
+  set_rownames(c("NU", "SU"))
+
+kbl(conf.mat,
+    format = "latex",
+    booktabs = TRUE)
+
+```
+
+# Examples
+### Bayes' theorem illustration
+```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
+## probability a response is from NU given that mn and nm are instersected
+p.a <- nrow(nu.prm) / nrow(dat)
+p.x1 <- (dat$MN_int %>% sum) / nrow(dat)
+p.x2 <- (dat$NM_int %>% sum) / nrow(dat)
+
+p.x1.a <- (nu.prm$MN_int %>% sum) / nrow(nu.prm)
+p.x2.a <- (nu.prm$NM_int %>% sum) / nrow(nu.prm)
+
+(p.x1.a * p.x2.a * p.a) / (p.x1 * p.x2)
+
+## probability a response is from SU given that mn and nm are instersected
+p.b <- nrow(su.prm) / nrow(dat)
+p.x1 <- (dat$MN_int %>% sum) / nrow(dat)
+p.x2 <- (dat$NM_int %>% sum) / nrow(dat)
+
+p.x1.b <- (su.prm$MN_int %>% sum) / nrow(su.prm)
+p.x2.b <- (su.prm$NM_int %>% sum) / nrow(su.prm)
+
+(p.x1.b * p.x2.b * p.b) / (p.x1 * p.x2)
+```
+
+### Probabilities of misclassified observations
+```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
+## get misclassified observations
+misclass.obs <- dat.class.probs %>%
+  filter(misclassified != 0)
+
+## average NU class probabilities for observed SU obs
+misclass.obs %>%
+  filter(misclassified == -1) %>%
+  pull(nu.prob) %>%
+  mean
+
+## average SU class probabilities for observed NU obs
+misclass.obs %>%
+  filter(misclassified == 1) %>%
+  pull(su.prob) %>%
+  mean
+
+## misclassifed observation 3 from the figure, number of SU observations with smaller area and smaller points_area_ration
+(misclass.sample[3,]$points_area_ratio > su.prm$points_area_ratio) %>% sum / nrow(su.prm)
+
+(misclass.sample[3,]$area > su.prm$area) %>% sum / nrow(su.prm)
+```
+
+### Percentages for important binary features
+```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
+
+## ks_cent
+nu.prm %>% filter(KS_cent == 1) %>% nrow / nu.prm %>% nrow
+su.prm %>% filter(KS_cent == 1) %>% nrow / su.prm %>% nrow
+
+## co_int
+nu.prm %>% filter(CO_int == 1) %>% nrow / nu.prm %>% nrow
+su.prm %>% filter(CO_int == 1) %>% nrow / su.prm %>% nrow
+
+## mi_int
+nu.prm %>% filter(MI_int == 1) %>% nrow / nu.prm %>% nrow
+su.prm %>% filter(MI_int == 1) %>% nrow / su.prm %>% nrow
+
+nu.prm %>% filter(VA_int == 1) %>% nrow / nu.prm %>% nrow
+su.prm %>% filter(VA_int == 1) %>% nrow / su.prm %>% nrow
+```
+
