@@ -1,6 +1,7 @@
 # Load data, libraries, and models
 ```{r echo = TRUE, eval = TRUE, message = FALSE, warning = FALSE}
 library(sf)
+## devtools::install_github("tmp111020/sfe")
 library(sfe)
 library(here)
 library(ggplot2)
